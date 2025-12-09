@@ -9,15 +9,18 @@ import os
 import socket
 
 # ================== 页面配置 ==================
-st.set_page_config(page_title="Alpha Hunter V2.4 (穿墙版)", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Alpha Hunter V2.5 (云端增强版)", page_icon="⚡", layout="wide")
 
-# ================== 全局设置 ==================
-# 1. 放宽超时时间到 30秒 (防止网络波动)
+# 全局超时设置
 socket.setdefaulttimeout(30)
 
-# 2. 伪装浏览器头
+# 伪装成真实的浏览器（这是关键）
 HEADERS = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+    'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.5',
+    'Connection': 'keep-alive',
+    'Upgrade-Insecure-Requests': '1',
 }
 
 # 自定义 CSS
@@ -36,23 +39,18 @@ SOURCE_FILE = "sources.json"
 CONFIG_FILE = "config.json"
 
 DEFAULT_CONFIG = {
-    "api_url": "https://new.wuxuai.com/v1", # 你的API
+    "api_url": "https://new.wuxuai.com/v1",
     "api_key": "",
-    "proxy_url": "", # 新增：代理地址
+    "proxy_url": "", 
     "models": ["gemini-2.5-pro", "gpt-4o", "glm-4-flash"],
     "selected_model": "gemini-2.5-pro"
 }
 
 def load_config():
-    if not os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(DEFAULT_CONFIG, f, ensure_ascii=False, indent=4)
-        return DEFAULT_CONFIG
+    if not os.path.exists(CONFIG_FILE): return DEFAULT_CONFIG
     try:
-        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    except:
-        return DEFAULT_CONFIG
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+    except: return DEFAULT_CONFIG
 
 def save_config(config_data):
     with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
@@ -65,36 +63,55 @@ def update_config_key(key, value):
     st.session_state.app_config[key] = value
     save_config(st.session_state.app_config)
 
+# ================== 核心：增强型抓取函数 ==================
+def fetch_feed_data(url, proxy):
+    """
+    使用 Requests 库进行强力抓取，绕过反爬虫
+    """
+    proxies = None
+    if proxy and proxy.strip():
+        proxies = {"http": proxy, "https": proxy}
+    
+    try:
+        # 第一层尝试：直接用 feedparser
+        d = feedparser.parse(url) # 不带 headers 先试一次
+        if d.entries:
+            return d
+            
+        # 第二层尝试：模拟浏览器请求
+        response = requests.get(url, headers=HEADERS, proxies=proxies, timeout=20)
+        response.raise_for_status()
+        # 将下载的内容喂给 feedparser
+        return feedparser.parse(response.content)
+        
+    except Exception as e:
+        raise e
+
 # ================== AI 分析核心 ==================
 def analyze_single_source(source, model, key, url, sys_prompt, proxy):
     result = {"source": source["name"], "status": "failed", "data": None, "error": None}
     
-    # === 关键修正：设置环境变量以使用代理 ===
-    if proxy and proxy.strip() != "":
-        os.environ['http_proxy'] = proxy
-        os.environ['https_proxy'] = proxy
-    else:
-        # 如果没填代理，清除环境变量，防止残留
-        os.environ.pop('http_proxy', None)
-        os.environ.pop('https_proxy', None)
-
     if not source.get("enabled", True):
         result["status"] = "skipped"
         return result
 
     try:
-        # 解析 RSS
-        feed = feedparser.parse(source["url"], request_headers=HEADERS)
+        # === 核心改动：使用增强版抓取 ===
+        feed = fetch_feed_data(source["url"], proxy)
         
         if not feed.entries:
-            result["status"] = "empty"
+            result["status"] = "empty" # 真的没抓到内容
             return result
             
         entry = feed.entries[0]
         content_snippet = entry.get('summary', '')[:800]
-        if len(content_snippet) < 10: content_snippet = entry.title # 保底
+        if len(content_snippet) < 10: content_snippet = entry.title 
 
-        # 调用 AI (OpenAI 库会自动读取上面的环境变量代理，或者直连)
+        # 即使抓取成功，如果 Key 没填对，AI 也会报错，这里加个判断
+        if not key:
+            raise Exception("未填写 API Key")
+
+        # 调用 AI
         client = OpenAI(api_key=key, base_url=url)
         
         user_prompt = f"【标题】：{entry.title}\n【内容摘要】：{content_snippet}"
@@ -122,31 +139,28 @@ def analyze_single_source(source, model, key, url, sys_prompt, proxy):
 
 # ================== 侧边栏 ==================
 with st.sidebar:
-    st.header("⚙️ 穿墙控制台")
+    st.header("⚙️ 云端控制台")
     
     with st.expander("🔌 连接配置", expanded=True):
         api_url = st.text_input("接口地址", value=st.session_state.app_config.get("api_url"), key="input_url", on_change=lambda: update_config_key("api_url", st.session_state.input_url))
         api_key = st.text_input("API 密钥", type="password", value=st.session_state.app_config.get("api_key"), key="input_key", on_change=lambda: update_config_key("api_key", st.session_state.input_key))
         
-        # === 新增：代理设置 ===
+        # 代理设置（重点提示）
         st.markdown("---")
-        st.caption("👇 如果全跳过，请在此填入本地代理地址 (如 http://127.0.0.1:7890)")
-        proxy_url = st.text_input("HTTP 代理 (Proxy)", value=st.session_state.app_config.get("proxy_url", ""), placeholder="例如: http://127.0.0.1:7890", key="input_proxy", on_change=lambda: update_config_key("proxy_url", st.session_state.input_proxy))
+        proxy_url = st.text_input("HTTP 代理 (云端请留空！)", value=st.session_state.app_config.get("proxy_url", ""), placeholder="本地填 http://127.0.0.1:7890，云端必须为空", key="input_proxy", on_change=lambda: update_config_key("proxy_url", st.session_state.input_proxy))
+        if proxy_url and "127.0.0.1" in proxy_url:
+            st.warning("⚠️ 警告：检测到你在云端使用了本地代理地址，这会导致无法连接！请清空此栏。")
 
     st.markdown("### 🤖 模型控制")
-    # ... (模型选择部分保持不变，省略以节省空间，功能同上版本) ...
-    # 为了保证完整性，我这里保留核心下拉框逻辑
     model_list = st.session_state.app_config.get("models", ["gemini-2.5-pro"])
     current_model = st.session_state.app_config.get("selected_model")
     index = model_list.index(current_model) if current_model in model_list else 0
     selected_model = st.selectbox("选择模型", model_list, index=index, key="model_select", on_change=lambda: update_config_key("selected_model", st.session_state.model_select))
     
-    # 刷新按钮逻辑简单化
+    # 简单的刷新按钮
     if st.button("🔄 刷新模型库"):
          try:
-            # 简单刷新逻辑
-            os.environ['http_proxy'] = proxy_url
-            os.environ['https_proxy'] = proxy_url
+            # 刷新时不走代理，除非用户强行填了
             headers = {"Authorization": f"Bearer {api_key}"}
             res = requests.get(f"{api_url.rstrip('/')}/models", headers=headers, timeout=10)
             if res.status_code == 200:
@@ -156,7 +170,7 @@ with st.sidebar:
                 save_config(st.session_state.app_config)
                 st.success("刷新成功")
                 st.rerun()
-         except: st.error("刷新失败，请检查网络或密钥")
+         except Exception as e: st.error(f"刷新失败: {e}")
 
     st.divider()
     st.markdown("### 📡 情报源管理")
@@ -175,7 +189,7 @@ with st.sidebar:
     system_prompt = st.text_area("AI 人设指令", value=default_prompt, height=100)
 
 # ================== 主界面 ==================
-st.title("⚡ Alpha Hunter V2.4 (穿墙版)")
+st.title("⚡ Alpha Hunter V2.5 (云端强力版)")
 
 if st.button("🚀 极速扫描 (TURBO SCAN)", type="primary"):
     active_sources = [s for s in st.session_state.sources_data if s.get('enabled', True)]
@@ -186,7 +200,6 @@ if st.button("🚀 极速扫描 (TURBO SCAN)", type="primary"):
         results_container = st.container()
         progress_bar = st.progress(0)
         
-        # 传入 proxy 参数
         with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
             future_to_source = {
                 executor.submit(analyze_single_source, source, selected_model, api_key, api_url, system_prompt, proxy_url): source 
@@ -214,9 +227,4 @@ if st.button("🚀 极速扫描 (TURBO SCAN)", type="primary"):
                             st.info(data['ai_analysis'])
                         st.divider()
                 elif res["status"] == "failed":
-                    error_msg = res['error']
-                    # 优化报错显示
-                    if "Connection" in str(error_msg) or "timed out" in str(error_msg):
-                        st.warning(f"⚠️ {res['source']} 无法连接 (请检查代理设置)")
-                    else:
-                        st.error(f"❌ {res['source']}: {error_msg}")
+                    st.error(f"❌ {res['source']}: {res['error']}")
